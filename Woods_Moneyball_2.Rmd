@@ -1,0 +1,815 @@
+---
+title: "Woods_Moneyball_2"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+```{r}
+library(dplyr)
+library(flux)
+library(ggplot2)
+library(gridExtra)
+library(knitr)
+library(rockchalk)
+library(tidyverse)
+library(ggthemes)
+library(ggpubr)
+library(RColorBrewer)
+```
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+```{r}
+setwd("C:/Users/Swood/OneDrive/Northwestern/410 Supervised Learning")
+```
+
+
+```{r}
+
+mydata <- read.csv("moneyball_train.csv")
+```
+
+```{r}
+head(mydata)
+```
+
+### EDA and Data Preparation
+
+
+```{r}
+str(mydata)
+```
+
+```{r}
+summary(mydata)
+```
+The min for target wins is 0, which does not seem right.
+
+```{r}
+filter(mydata, TARGET_WINS == 0)
+```
+
+This row has many 0 values, so I'm going to drop it.
+
+```{r}
+dim(mydata)
+
+mydata = filter(mydata, TARGET_WINS != 0)
+
+dim(mydata)
+```
+```{r}
+summary(mydata)
+```
+```{r}
+filter(mydata, TEAM_BATTING_HR == 0)
+```
+
+```{r}
+filter(mydata, TEAM_PITCHING_SO == 0)
+```
+
+All 19 rows with no pitching strike outs also have no batting strike outs, which should not be related. Removing these rows decreased R2 values for linear models, so I am going to leave them.
+
+
+
+```{r}
+colSums(is.na(mydata))
+```
+
+
+```{r}
+(colMeans(is.na(mydata)))*100
+```
+I am going to see if adding dummy variable columns for any column with more than 10% NAs has value (1 = NA, 0 = numeric): Team_Baserun_CS, Team_Batting_HBP, Team_Fielding_DP
+```{r}
+
+mydata$TEAM_BASERUN_CS_DummyNA <- ifelse(is.na(mydata$TEAM_BASERUN_CS), 1, 0)
+
+mydata$Team_Batting_HBP_DummyNA <- ifelse(is.na(mydata$TEAM_BATTING_HBP), 1, 0)
+
+mydata$Team_Fielding_DP_DummyNA <- ifelse(is.na(mydata$TEAM_FIELDING_DP), 1, 0)
+
+head(mydata)
+
+```
+```{r}
+aggregate(mydata$TARGET_WINS, list(mydata$TEAM_BASERUN_CS_DummyNA), FUN=mean)
+
+aggregate(mydata$TARGET_WINS, list(mydata$Team_Batting_HBP_DummyNA), FUN=mean)
+
+aggregate(mydata$TARGET_WINS, list(mydata$Team_Fielding_DP_DummyNA), FUN=mean)
+```
+
+
+With a very small difference in means between groups, I am going to drop any column with more than 10% NA values: Team_Baserun_CS, Team_Batting_HBP, Team_Fielding_DP. 
+
+```{r}
+
+dim(mydata)
+
+df = subset(mydata, select = -c(TEAM_BASERUN_CS, TEAM_BATTING_HBP, TEAM_FIELDING_DP, TEAM_BASERUN_CS_DummyNA, Team_Batting_HBP_DummyNA, Team_Fielding_DP_DummyNA) )
+
+dim(df)
+
+```
+
+```{r}
+library(corrplot)
+
+corr_mat <- cor(df)
+
+corr_mat
+```
+
+I am going to investigate potential linear relationships between remaining columns with NAs before deciding what to do with them.
+
+```{r}
+names(which(colSums(is.na(df))>0))
+```
+```{r}
+na_cols <- c("TEAM_BATTING_SO", "TEAM_BASERUN_SB", "TEAM_PITCHING_SO")
+
+point1 <- ggplot(data = df) + aes(x = TEAM_BATTING_SO, y = TARGET_WINS) +
+    geom_point(color = "cadetblue") + ggtitle("Team_Batting_SO vs Wins") +
+    ylab("TARGET_WINS") + xlab("TEAM_BATTING_SO")+
+    theme(legend.position = c(), legend.background = element_rect())
+
+point2 <- ggplot(data = df) + aes(x = TEAM_BASERUN_SB, y = TARGET_WINS) +
+    geom_point(color = "indianred") + ggtitle("TEAM_BASERUN_SB vs Wins") +
+    ylab("TARGET_WINS") + xlab("TEAM_BASERUN_SB")+
+    theme(legend.position = c(), legend.background = element_rect())
+
+point3 <- ggplot(data = df) + aes(x = TEAM_PITCHING_SO, y = TARGET_WINS) +
+    geom_point(color = "black") + ggtitle("TEAM_PITCHING_SO vs Wins") +
+    ylab("TARGET_WINS") + xlab("TTEAM_PITCHING_SO")+
+    theme(legend.position = c(), legend.background = element_rect())
+
+
+
+point1
+point2
+point3
+```
+
+
+None of these fields show strong linear relationships, so I am going to impute with mean values for now.
+```{r}
+for(i in 1:ncol(df)) {
+  df[ , i][is.na(df[ , i])] <- mean(df[ , i], na.rm=TRUE)
+}
+```
+
+
+```{r}
+
+names(which(colSums(is.na(df))>0))
+```
+Now I can look at correlations
+```{r}
+corr_mat <- cor(df, method = "s")
+
+
+corr_mat
+```
+
+Some fields are correlated with one another, avoid using both of these fields in a model. For example, TEAM_BATTING_HR AND TEAM_PITCHING_HR.
+```{r}
+corr_mat[corr_mat < 0.6] <- ""
+
+corr_mat
+```
+Time to examine variables correlated with target_wins
+
+First, look at distribution of target variable
+
+```{r}
+hist(df$TARGET_WINS, col = 'powderblue')
+
+
+
+skewness(df$TARGET_WINS)
+kurtosis(df$TARGET_WINS)
+```
+
+
+Target_Wins features negative skewness (heavy left tail) and positive kurtosis (peaked).
+
+```{r}
+boxplot(df$TARGET_WINS,
+main = 'Target Wins Distribution')
+
+```
+
+```{r}
+
+data_cor <- cor(df[ , colnames(df) != "TARGET_WINS"],  # Calculate correlations
+                df$TARGET_WINS)
+
+
+data_cor[order(data_cor[1]),]
+```
+Let's look at the distribution of values in TEAM_BATTING_H
+
+```{r}
+
+hist(df$TEAM_BATTING_H, col = 'powderblue')
+
+
+
+skewness(df$TEAM_BATTING_H)
+kurtosis(df$TEAM_BATTING_H)
+
+boxplot(df$TEAM_BATTING_H,
+main = 'TEAM_BATTING_H Distribution')
+
+
+```
+This has significant skewness and  kurtosis - transformations may improve model performance. Now let's look at the negatively correlated column TEAM_FIELDING_E.
+```{r}
+hist(df$TEAM_BATTING_H, col = 'powderblue')
+
+
+
+skewness(df$TEAM_FIELDING_E)
+kurtosis(df$TEAM_FIELDING_E)
+
+boxplot(df$TEAM_FIELDING_E,
+main = 'TEAM_FIELDING_E Distribution')
+```
+
+This column has many extreme upper outliers.
+
+Now lets look at the distribution of all columns before proceeding to modeling.
+
+```{r}
+#Generate a plot of all predictors
+
+
+ggplot(gather(df[, 3:15], variable, value), aes(x=value)) + geom_density() +
+  facet_wrap(~variable, scales = "free")
+
+
+```
+
+
+
+
+### Modeling
+
+
+Lets look at a linear model with top correlations. Note Team_Batting_2b and Team_Batting_H are moderately correlated, so I will not include team_batting_2b
+```{r}
+summary(lr_md1 <- lm(TARGET_WINS ~ TEAM_BATTING_H + TEAM_BATTING_3B + TEAM_BATTING_BB, data = df))
+```
+
+
+```{r}
+summary(lr_md1 <- lm(TARGET_WINS ~ TEAM_BATTING_H + TEAM_BATTING_3B + TEAM_BATTING_BB + TEAM_PITCHING_HR + TEAM_FIELDING_E + TEAM_PITCHING_SO + TEAM_PITCHING_H, data = df))
+```
+Let's see a model with all columns
+```{r}
+
+summary(lr_md1 <- lm(TARGET_WINS ~ . - X - INDEX, data = df))
+
+plot(lr_md1)
+
+```
+
+Most assumptions are broken here - errors are not normal on both tails, scale-location trend line is not straight.
+
+
+Let's see how a log-10 transformation of target_wins changes performance
+```{r}
+
+
+summary(lr_md2 <- lm(log10(TARGET_WINS) ~ . - X - INDEX, data = df))
+
+plot(lr_md2)
+
+```
+
+
+I'm going with "lr_md2" as my final model.
+
+
+### Prediction and Model Summary
+
+```{r}
+test <- read.csv("moneyball_test.csv")
+
+head(test)
+
+summary(test)
+```
+Apply same transformations to test dataset
+
+```{r}
+dim(test)
+
+test = subset(test, select = -c(TEAM_BASERUN_CS, TEAM_BATTING_HBP, TEAM_FIELDING_DP) )
+
+dim(test)
+```
+```{r}
+
+names(which(colSums(is.na(test))>0))
+
+
+for(i in 1:ncol(test)) {
+  test[ , i][is.na(test[ , i])] <- mean(test[ , i], na.rm=TRUE)
+}
+
+names(which(colSums(is.na(test))>0))
+```
+Time to predict with test data.
+
+```{r}
+
+preds <- 10^(predict(lr_md2, test))
+```
+
+
+```{r}
+submit <- data_frame('Index' = test$INDEX, 'P_TARGET_WINS' = preds)
+
+write_csv(submit, 'submission1.csv')
+```
+```{r}
+library(MASS)
+
+#Return Model Equation
+
+cc <- lr_md2$coefficients
+(eqn <- paste("Y =", paste(round(cc[1],5), paste(round(cc[-1],5), names(cc[-1]), sep=" * ", collapse=" + "), sep=" + "), "+ e"))
+```
+```{r}
+lr_md2$coefficients
+```
+```{r}
+summary(lr_md2)
+
+plot(lr_md2)
+```
+## Assignment 2 Items start Here
+
+
+```{r}
+head(df)
+dim(df)
+```
+Append predictions from LR_MD2 to dataframe, split into buckets
+
+```{r}
+df_2 <- df
+
+df_2$residuals <- (lr_md1$residuals)
+
+head(df_2)
+
+```
+
+
+Split into buckets
+
+If TARGET_WINS <50 bucket = one
+If TARGET_WINS >= 50 and TARGET_WINS <100 bucket = two
+If TARGET_WINS >= 100 bucket = three
+
+```{r}
+df_2 <- df_2 %>% mutate(Bucket =
+                     case_when(TARGET_WINS < 50 ~ "one", 
+                               TARGET_WINS >= 50 & TARGET_WINS < 100 ~ "two",
+                               TARGET_WINS >= 100 ~ "three")
+)
+
+aggregate(TARGET_WINS~Bucket, data=df_2, mean)
+
+```
+Make a boxplot of the residuals by bucket.
+Which bucket gives a better fit? Do you have buckets that are consistently overpredicted? Do you have buckets that are consistently under-predicted?
+
+```{r}
+
+
+
+boxplot(df_2$residuals ~ df_2$Bucket)
+```
+
+The mean of the residuals in bucket two appears closest to zero, indicating my model performs best on these records.
+
+```{r}
+df_2$lr_md1_predictions <- df_2$TARGET_WINS - df_2$residuals
+
+head(df_2)
+```
+
+
+```{r}
+x1 = as.data.frame(aggregate(TARGET_WINS~Bucket, data=df_2, mean))
+x2 = as.data.frame(aggregate(lr_md1_predictions~Bucket, data=df_2, mean))
+
+x1$Pred_wins = x2$lr_md1_predictions
+
+x1$mean_diff = x1$TARGET_WINS - x1$Pred_wins
+
+x1
+
+
+```
+Predictions for group two are more accurate.
+
+Group TARGET_WINS using dummy or indicator variables. Create between 3 and 6
+groups. Code a family of indicator variables for the TARGET_WINS groups to
+include in your multiple regression model. See Chapter 5 p131 in C&H. Your
+indicator variables should be of the form Group1 = 1 if TARGET_WINS is in some
+range, Group1 = 0 otherwise.
+
+
+```{r}
+summary(df_2$TARGET_WINS)
+
+(146 - 12)/4
+
+x = 146
+
+i = 1
+
+for (i in 1:4){
+  print(146 - i*34)
+
+}
+```
+```{r}
+df_2$wins_cat <- cut(df_2$TARGET_WINS,
+              breaks=c(10, 44, 78, 112, 147),
+              labels=c('1', '2', '3', '4'))
+
+head(df_2)
+```
+
+```{r}
+# Install the required package
+install.packages("fastDummies")
+  
+# Load the library
+library(fastDummies)
+```
+
+```{r}
+data <- dummy_cols(df_2, 
+                   select_columns = "wins_cat", remove_first_dummy = TRUE)
+
+head(data)
+```
+
+Refit regression model with new dummy variables. My base category is win_cat 1, the lowest wins category group.
+
+```{r}
+summary(lr_md3 <- lm(TARGET_WINS ~ . - X - INDEX - residuals - wins_cat, data = data))
+
+plot(lr_md3)
+```
+
+The Adjusted R-squared value jumped up a lot, which makes sense after feeding the response in as dummy predictor variables.
+
+
+Define a new variable called trunc_team_batting as:
+trunc_team_batting = team_batting_h
+if team_batting_h < 1122 then trunc_team_batting_h=1122
+if team_batting_h > 2333 then trunc_team_batting_h=2333
+
+```{r}
+
+data2 <- data %>% mutate(trunc_team_batting =
+                     case_when(TEAM_BATTING_H < 1122 ~ '1122',
+                               TEAM_BATTING_H >= 1122 & TEAM_BATTING_H <= 2333 ~ '1',
+                               TEAM_BATTING_H > 2333 ~ '2333')
+)
+
+head(data2)
+
+```
+
+
+```{r}
+summary(data2$trunc_team_batting)
+```
+Make dummies from trunc_team_batting?
+
+```{r}
+data3 <- dummy_cols(data2, 
+                   select_columns = "trunc_team_batting")
+
+head(data3)
+```
+
+
+```{r}
+summary(lr_md4 <- lm(TARGET_WINS ~ . - X - INDEX - residuals - wins_cat - trunc_team_batting - trunc_team_batting_1, data = data3))
+
+
+```
+This improved adjusted r squared minimally (by .03)
+
+
+## Section 2 Model Comparison of Y versus log(Y)
+
+
+Before proceeding, I'm dropping the wins cat fields from my dataframe as that data won't be available in the test set
+```{r}
+
+
+dim(data3)
+
+
+df = subset(data3, select = -c(residuals, wins_cat, wins_cat_2, wins_cat_3, wins_cat_4, trunc_team_batting, trunc_team_batting_1) )
+
+dim(df)
+
+head(df)
+
+
+```
+# TARGET WINS MODEL
+
+```{r}
+summary(lr_md5 <- lm(TARGET_WINS ~ . - X - INDEX, data = df))
+
+plot(lr_md5)
+
+
+```
+Now let's log transform TARGET_WINS and compare the models:
+
+```{r}
+
+summary(lr_md6 <- lm(log(TARGET_WINS) ~ . - X - INDEX, data = df))
+
+plot(lr_md6)
+
+
+```
+
+Log transforming TARGET_WINS increased adjusted R Squared by .0486.
+
+VIF for each model:
+
+```{r}
+library(car)
+
+vif_values <- vif(lr_md6)
+
+#create horizontal bar chart to display each VIF value
+barplot(vif_values, main = "VIF Values", horiz = TRUE, col = "steelblue")
+
+#add vertical line at 5
+abline(v = 10, lwd = 3, lty = 2)
+
+vif_values
+
+```
+Team pitching HR and team batting HR both have VIFS above 30, so I am going to drop TEAM_BATTING_HR and re run the model.
+
+```{r}
+
+summary(lr_md7 <- lm(log(TARGET_WINS) ~ . - X - INDEX - TEAM_BATTING_HR, data = df))
+
+plot(lr_md7)
+
+vif(lr_md7)
+
+```
+
+Adjusted R squared actually increased by .01
+
+Let's try transformations to predictor variables too:
+
+First, lets plot each continuous distribution:
+
+```{r}
+
+ggplot(gather(df[, 3:15], variable, value), aes(x=value)) + geom_density() +
+  facet_wrap(~variable, scales = "free")
+
+
+```
+Following, this general guide, I will apply transformations:
+
+square-root for moderate skew:
+  sqrt(x) for positively skewed data,
+  sqrt(max(x+1) - x) for negatively skewed data
+  
+log for greater skew:
+  log10(x) for positively skewed data,
+  log10(max(x+1) - x) for negatively skewed data
+  
+inverse for severe skew:
+  1/x for positively skewed data
+  1/(max(x+1) - x) for negatively skewed data
+
+```{r}
+
+summary(lr_md8 <- lm(log(TARGET_WINS) ~ TEAM_BATTING_H + TEAM_BATTING_2B + TEAM_BATTING_3B + TEAM_BATTING_BB + TEAM_BATTING_SO + sqrt(TEAM_BASERUN_SB) + TEAM_PITCHING_H + TEAM_PITCHING_HR + sqrt(TEAM_PITCHING_BB) + TEAM_PITCHING_SO + sqrt(TEAM_FIELDING_E) + trunc_team_batting_1122 + trunc_team_batting_2333, data = df))
+
+plot(lr_md8)
+
+
+```
+
+```{r}
+summary(lr_md9 <- lm(log(TARGET_WINS) ~ sqrt(TEAM_BATTING_H) + TEAM_BATTING_2B + sqrt(TEAM_BATTING_3B) + TEAM_BATTING_BB + TEAM_BATTING_SO + sqrt(TEAM_BASERUN_SB) + sqrt(TEAM_PITCHING_H) + TEAM_PITCHING_HR + sqrt(TEAM_PITCHING_BB) + TEAM_PITCHING_SO + sqrt(TEAM_FIELDING_E) + trunc_team_batting_1122 + trunc_team_batting_2333, data = df))
+
+plot(lr_md9)
+```
+Adding additional sqrt transformations reduced adjusted R squared slightly.
+
+
+I am going add a log 10 transformation to lr_md8
+
+```{r}
+
+summary(lr_md10 <- lm(log10(TARGET_WINS) ~ TEAM_BATTING_H + TEAM_BATTING_2B + TEAM_BATTING_3B + TEAM_BATTING_BB + TEAM_BATTING_SO + sqrt(TEAM_BASERUN_SB) + TEAM_PITCHING_H + TEAM_PITCHING_HR + sqrt(TEAM_PITCHING_BB) + TEAM_PITCHING_SO + sqrt(TEAM_FIELDING_E) + trunc_team_batting_1122 + trunc_team_batting_2333, data = df))
+
+plot(lr_md10)
+
+```
+
+
+
+
+lr_md8 is my model with the highest r square. I am going to read in the test dataset, make transformations, and submit four models to kaggle.
+
+```{r}
+
+test <- read.csv("moneyball_test.csv")
+
+head(test)
+
+dim(test)
+
+test = subset(test, select = -c(TEAM_BASERUN_CS, TEAM_BATTING_HBP, TEAM_FIELDING_DP) )
+
+dim(test)
+
+
+```
+
+```{r}
+
+names(which(colSums(is.na(test))>0))
+
+
+for(i in 1:ncol(test)) {
+  test[ , i][is.na(test[ , i])] <- mean(test[ , i], na.rm=TRUE)
+}
+
+names(which(colSums(is.na(test))>0))
+
+```
+
+Add trunc team batting fields
+
+```{r}
+test <- test %>% mutate(trunc_team_batting =
+                     case_when(TEAM_BATTING_H < 1122 ~ '1122',
+                               TEAM_BATTING_H >= 1122 & TEAM_BATTING_H <= 2333 ~ '1',
+                               TEAM_BATTING_H > 2333 ~ '2333')
+)
+
+head(test)
+
+
+```
+
+
+```{r}
+test <- dummy_cols(test, 
+                   select_columns = "trunc_team_batting")
+
+head(test)
+```
+
+```{r}
+max(test$TEAM_BATTING_H)
+```
+There are no teams with batting hits above 2333, so the trunc_team_batting_2333 column was not generated.
+
+```{r}
+
+
+test$trunc_team_batting_2333 <- 0
+
+head(test)
+```
+Submit first two models that have team_batting_hr in them:
+
+```{r}
+
+dim(test)
+
+
+test1 = subset(test, select = -c(trunc_team_batting, trunc_team_batting_1) )
+
+dim(test1)
+
+head(test1)
+
+```
+
+Submit lr_md5
+
+```{r}
+
+preds <- predict(lr_md5, test1)
+
+submit <- data_frame('Index' = test1$INDEX, 'P_TARGET_WINS' = preds)
+
+write_csv(submit, 'submission2.csv')
+
+```
+
+
+Submit lr_md7, reverse log transformation
+
+```{r}
+
+preds <- exp(predict(lr_md7, test1))
+
+submit <- data_frame('Index' = test1$INDEX, 'P_TARGET_WINS' = preds)
+
+write_csv(submit, 'submission3.csv')
+
+```
+
+
+This performed worse than lr_md5, lets try lr_md6
+
+```{r}
+preds <- exp(predict(lr_md6, test1))
+
+submit <- data_frame('Index' = test1$INDEX, 'P_TARGET_WINS' = preds)
+
+write_csv(submit, 'submission4.csv')
+```
+
+
+This performed slightly worse than lr_md7
+
+submit lr_md8:
+
+```{r}
+
+preds <- exp(predict(lr_md8, test1))
+
+submit <- data_frame('Index' = test1$INDEX, 'P_TARGET_WINS' = preds)
+
+write_csv(submit, 'submission5.csv')
+
+```
+
+The log transformation does not appear to perform as well as the log10 transformation on the test set.
+
+Lets try lr_md10, which has a log10 transformation
+
+```{r}
+
+preds <- 10^(predict(lr_md10, test1))
+
+submit <- data_frame('Index' = test1$INDEX, 'P_TARGET_WINS' = preds)
+
+write_csv(submit, 'submission6.csv')
+
+```
+
+
+## Section 4, Formula for lr_md8
+
+```{r}
+
+#Return Model Equation
+
+cc <- lr_md8$coefficients
+(eqn <- paste("Y =", paste(round(cc[1],5), paste(round(cc[-1],5), names(cc[-1]), sep=" * ", collapse=" + "), sep=" + "), "+ e"))
+
+```
+
+Compare equation to lr_md2, the model that had the best test performance
+
+```{r}
+
+#Return Model Equation
+
+cc <- lr_md2$coefficients
+(eqn <- paste("Y =", paste(round(cc[1],5), paste(round(cc[-1],5), names(cc[-1]), sep=" * ", collapse=" + "), sep=" + "), "+ e"))
+
+```
+The only differences are the removal of TEAM_BATTING_HR, sqrt transforming some predictors, and the added trunc_team_batting fields.
+
+
